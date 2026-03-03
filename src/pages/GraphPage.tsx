@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import ForceGraph2D from "react-force-graph-2d";
-import { fetchDocumentGraph, fetchRelatedDocuments, fetchChunkGraph, fetchSchemaGraph, deleteSchemaTable, deleteForeignKey } from "../lib/api";
-import type { GraphData, RelatedDocument } from "../types";
+import { fetchDocumentGraph, fetchRelatedDocuments, fetchChunkGraph, fetchSchemaGraph, deleteSchemaTable, deleteForeignKey, fetchSchemaComparison, importTables, createForeignKey, updateTable } from "../lib/api";
+import type { GraphData, RelatedDocument, SchemaComparison, TableColumn, GraphNode } from "../types";
 
 interface GraphNode2D {
   id: string;
@@ -69,13 +69,32 @@ export default function GraphPage() {
   const [chunkGraph, setChunkGraph] = useState<GraphData | null>(null);
   const [schemaGraph, setSchemaGraph] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "chunks" | "schema">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "chunks" | "schema" | "import">("overview");
   const [selectedDoc, setSelectedDoc] = useState<string | null>(docId);
   const [hoveredNode, setHoveredNode] = useState<GraphNode2D | null>(null);
   const [selectedSchemaNode, setSelectedSchemaNode] = useState<GraphNode2D | null>(null);
   const [deleting, setDeleting] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  const [comparison, setComparison] = useState<SchemaComparison | null>(null);
+  const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [dragSource, setDragSource] = useState<GraphNode2D | null>(null);
+  const [showFkModal, setShowFkModal] = useState(false);
+  const [fkForm, setFkForm] = useState({
+    fromTable: "",
+    toTable: "",
+    fromCol: "",
+    toCol: ""
+  });
+  const [editingTable, setEditingTable] = useState(false);
+  const [tableEditForm, setTableEditForm] = useState({
+    displayName: "",
+    description: "",
+    columns: [] as TableColumn[]
+  });
 
   useEffect(() => {
     const el = containerRef.current;
@@ -131,6 +150,36 @@ export default function GraphPage() {
     }
   }, [selectedDoc]);
 
+  const loadComparison = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchSchemaComparison();
+      setComparison(data);
+      setSelectedTables(new Set());
+    } catch (err) {
+      console.error("Failed to load schema comparison:", err);
+      alert("Failed to load schema comparison. Make sure MSSQL is configured.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleImportTables = useCallback(async () => {
+    if (selectedTables.size === 0) return;
+    setImporting(true);
+    try {
+      const result = await importTables(Array.from(selectedTables));
+      alert(`Imported ${result.imported} tables successfully${result.errors.length > 0 ? `. Errors: ${result.errors.join(", ")}` : ""}`);
+      setActiveTab("schema");
+      await loadSchemaGraph();
+    } catch (err) {
+      console.error("Failed to import tables:", err);
+      alert("Failed to import tables");
+    } finally {
+      setImporting(false);
+    }
+  }, [selectedTables, loadSchemaGraph]);
+
   const handleDeleteTable = useCallback(async (tableName: string) => {
     if (!confirm(`Delete table "${tableName}" and all its relationships?`)) return;
     setDeleting(true);
@@ -162,10 +211,13 @@ export default function GraphPage() {
 
   useEffect(() => {
     setSelectedSchemaNode(null);
+    setEditMode(false);
+    setDragSource(null);
     if (activeTab === "overview") loadGraph();
     else if (activeTab === "chunks" && selectedDoc) loadChunkGraph();
     else if (activeTab === "schema") loadSchemaGraph();
-  }, [activeTab, loadGraph, loadChunkGraph, loadSchemaGraph, selectedDoc]);
+    else if (activeTab === "import") loadComparison();
+  }, [activeTab, loadGraph, loadChunkGraph, loadSchemaGraph, loadComparison, selectedDoc]);
 
   const overviewForceData = useMemo(
     () => (graphData ? toForceData(graphData, selectedDoc) : null),
@@ -216,11 +268,101 @@ export default function GraphPage() {
           >
             Schema
           </button>
+          <button
+            onClick={() => setActiveTab("import")}
+            className={`px-3 py-1 rounded text-xs ${activeTab === "import" ? "bg-primary text-primary-text" : "bg-surface text-muted"}`}
+          >
+            Import
+          </button>
         </div>
       </div>
 
       {loading ? (
-        <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading graph...</div>
+        <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading...</div>
+      ) : activeTab === "import" ? (
+        <div className="flex-1 overflow-auto p-6">
+          <div className="max-w-5xl mx-auto">
+            <h3 className="text-lg font-semibold mb-4">Import MSSQL Tables</h3>
+            {comparison ? (
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <h4 className="text-sm font-medium mb-2 text-emerald-400">New Tables (from MSSQL)</h4>
+                  <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
+                    {comparison.newTables.length === 0 ? (
+                      <div className="text-sm text-muted">All tables already imported</div>
+                    ) : (
+                      comparison.newTables.map((table) => (
+                        <label key={table.name} className="flex items-start gap-2 p-2 hover:bg-surface-hover rounded cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedTables.has(table.name)}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedTables);
+                              if (e.target.checked) newSet.add(table.name);
+                              else newSet.delete(table.name);
+                              setSelectedTables(newSet);
+                            }}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 text-sm">
+                            <div className="font-medium">{table.displayName}</div>
+                            <div className="text-xs text-muted">{table.columns.length} columns</div>
+                          </div>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-sm font-medium mb-2 text-blue-400">Existing Tables (in Neo4j)</h4>
+                  <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
+                    {comparison.existingTables.length === 0 ? (
+                      <div className="text-sm text-muted">No tables in Neo4j yet</div>
+                    ) : (
+                      comparison.existingTables.map((table) => (
+                        <div key={table.name} className="p-2 rounded bg-accent flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium">{table.displayName}</div>
+                            <div className="text-xs text-muted">{table.columns.length} columns</div>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Delete table "${table.name}" and all its relationships?`)) return;
+                              setDeleting(true);
+                              try {
+                                await deleteSchemaTable(table.name);
+                                await loadComparison();
+                              } catch (err) {
+                                console.error("Failed to delete table:", err);
+                                alert("Failed to delete table");
+                              } finally {
+                                setDeleting(false);
+                              }
+                            }}
+                            disabled={deleting}
+                            className="text-red-400 hover:text-red-300 text-sm ml-2 disabled:opacity-50"
+                            title="Delete table"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            {selectedTables.size > 0 && (
+              <button
+                onClick={handleImportTables}
+                disabled={importing}
+                className="mt-6 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white rounded-lg text-sm font-medium"
+              >
+                {importing ? "Importing..." : `Import Selected (${selectedTables.size})`}
+              </button>
+            )}
+          </div>
+        </div>
       ) : (
         <div className="flex-1 flex min-h-0">
           {/* Graph canvas */}
@@ -333,7 +475,23 @@ export default function GraphPage() {
                 linkLabel={(link: GraphLink2D) =>
                   link.fromColumn ? `FK: ${link.fromColumn} -> ${link.toColumn}` : link.type
                 }
-                onNodeClick={(node: GraphNode2D) => setSelectedSchemaNode(prev => prev?.id === node.id ? null : node)}
+                onNodeClick={(node: GraphNode2D) => {
+                  if (editMode) {
+                    if (!dragSource) {
+                      setDragSource(node);
+                    } else if (dragSource.id !== node.id) {
+                      setShowFkModal(true);
+                      setFkForm({
+                        fromTable: dragSource.id,
+                        toTable: node.id,
+                        fromCol: "",
+                        toCol: ""
+                      });
+                    }
+                  } else {
+                    setSelectedSchemaNode(prev => prev?.id === node.id ? null : node);
+                  }
+                }}
                 cooldownTicks={100}
                 d3AlphaDecay={0.02}
                 d3VelocityDecay={0.3}
@@ -424,6 +582,28 @@ export default function GraphPage() {
                   <div className="text-sm font-medium">{selectedSchemaNode.label}</div>
                   <div className="flex items-center gap-1">
                     <button
+                      onClick={() => {
+                        setEditingTable(!editingTable);
+                        if (!editingTable) {
+                          let columns: TableColumn[] = [];
+                          try {
+                            columns = selectedSchemaNode.properties.columns
+                              ? JSON.parse(String(selectedSchemaNode.properties.columns))
+                              : [];
+                          } catch {}
+                          setTableEditForm({
+                            displayName: selectedSchemaNode.properties.displayName as string || selectedSchemaNode.label,
+                            description: selectedSchemaNode.properties.description as string || "",
+                            columns: columns
+                          });
+                        }
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                      title="Edit table"
+                    >
+                      {editingTable ? "Cancel" : "Edit"}
+                    </button>
+                    <button
                       onClick={() => handleDeleteTable(selectedSchemaNode.id)}
                       disabled={deleting}
                       className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
@@ -432,17 +612,103 @@ export default function GraphPage() {
                       Delete
                     </button>
                     <button
-                      onClick={() => setSelectedSchemaNode(null)}
+                      onClick={() => {
+                        setSelectedSchemaNode(null);
+                        setEditingTable(false);
+                      }}
                       className="text-xs text-muted hover:text-foreground"
                     >
                       ✕
                     </button>
                   </div>
                 </div>
+                {editingTable ? (
+                  <div className="space-y-2 mb-2">
+                    <div>
+                      <label className="text-xs text-muted block mb-1">Display Name</label>
+                      <input
+                        type="text"
+                        value={tableEditForm.displayName}
+                        onChange={(e) => setTableEditForm({ ...tableEditForm, displayName: e.target.value })}
+                        className="w-full px-2 py-1 bg-background border border-border rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted block mb-1">Table Description</label>
+                      <textarea
+                        value={tableEditForm.description}
+                        onChange={(e) => setTableEditForm({ ...tableEditForm, description: e.target.value })}
+                        className="w-full px-2 py-1 bg-background border border-border rounded text-sm resize-none"
+                        rows={2}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted block mb-1">Columns</label>
+                      <div className="space-y-1 max-h-60 overflow-y-auto">
+                        {tableEditForm.columns.map((col, idx) => (
+                          <div key={col.name} className="p-2 bg-background border border-border rounded">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-mono font-medium">{col.name}</span>
+                              <span className="text-xs text-muted">{col.type}</span>
+                              {col.isPrimaryKey && <span className="text-xs text-amber-400">PK</span>}
+                            </div>
+                            <input
+                              type="text"
+                              placeholder="Column description..."
+                              value={col.description || ""}
+                              onChange={(e) => {
+                                const newColumns = [...tableEditForm.columns];
+                                newColumns[idx] = { ...col, description: e.target.value };
+                                setTableEditForm({ ...tableEditForm, columns: newColumns });
+                              }}
+                              className="w-full px-2 py-1 bg-surface border border-border rounded text-xs"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const nodeId = selectedSchemaNode.id;
+                          await updateTable(nodeId, {
+                            displayName: tableEditForm.displayName,
+                            description: tableEditForm.description,
+                            columns: tableEditForm.columns
+                          });
+                          setEditingTable(false);
+                          await loadSchemaGraph();
+
+                          // Update selectedSchemaNode with new data
+                          const updatedGraph = await fetchSchemaGraph();
+                          const updatedNode = updatedGraph.nodes.find((n: GraphNode) => n.id === nodeId);
+                          if (updatedNode) {
+                            setSelectedSchemaNode({
+                              ...selectedSchemaNode,
+                              properties: updatedNode.properties,
+                              label: updatedNode.label
+                            });
+                          }
+                        } catch (err) {
+                          console.error("Failed to update table:", err);
+                          alert("Failed to update table");
+                        }
+                      }}
+                      className="w-full px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted space-y-1">
+                    {selectedSchemaNode.properties.description ? (
+                      <div className="italic">{String(selectedSchemaNode.properties.description)}</div>
+                    ) : (
+                      <div className="italic text-muted/50">No description</div>
+                    )}
+                  </div>
+                )}
                 <div className="text-xs text-muted space-y-1">
-                  {selectedSchemaNode.properties.description ? (
-                    <div>{String(selectedSchemaNode.properties.description)}</div>
-                  ) : null}
                   {selectedSchemaNode.properties.columns ? (() => {
                     try {
                       const cols = JSON.parse(String(selectedSchemaNode.properties.columns)) as Array<{
@@ -537,6 +803,22 @@ export default function GraphPage() {
                 <div className="text-sm">
                   <span className="text-muted">Foreign Keys:</span> {schemaGraph.edges.length}
                 </div>
+                <button
+                  onClick={() => {
+                    setEditMode(!editMode);
+                    setDragSource(null);
+                  }}
+                  className={`mt-2 w-full px-3 py-2 rounded text-xs font-medium ${editMode ? "bg-amber-500 text-white" : "bg-surface border border-border"}`}
+                >
+                  Edit Mode: {editMode ? "ON" : "OFF"}
+                </button>
+                {editMode && dragSource && (
+                  <div className="p-2 bg-accent rounded text-xs">
+                    <div className="font-medium">Selected:</div>
+                    <div className="text-muted">{dragSource.label}</div>
+                    <div className="mt-1 text-xs text-muted">Click another table to create FK</div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -599,6 +881,103 @@ export default function GraphPage() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* FK Creation Modal */}
+      {showFkModal && dragSource && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-surface border border-border rounded-lg p-6 w-96 shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">Create Foreign Key</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm text-muted block mb-1">From Table</label>
+                <div className="font-medium">{fkForm.fromTable}</div>
+                <label className="text-sm text-muted block mb-1 mt-2">Column</label>
+                <select
+                  value={fkForm.fromCol}
+                  onChange={(e) => setFkForm({ ...fkForm, fromCol: e.target.value })}
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm"
+                >
+                  <option value="">Select column...</option>
+                  {(() => {
+                    const node = schemaForceData?.nodes.find(n => n.id === fkForm.fromTable);
+                    if (!node?.properties.columns) return null;
+                    try {
+                      const cols = JSON.parse(String(node.properties.columns)) as TableColumn[];
+                      return cols.map(col => (
+                        <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
+                      ));
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-muted block mb-1">To Table</label>
+                <div className="font-medium">{fkForm.toTable}</div>
+                <label className="text-sm text-muted block mb-1 mt-2">Column</label>
+                <select
+                  value={fkForm.toCol}
+                  onChange={(e) => setFkForm({ ...fkForm, toCol: e.target.value })}
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm"
+                >
+                  <option value="">Select column...</option>
+                  {(() => {
+                    const node = schemaForceData?.nodes.find(n => n.id === fkForm.toTable);
+                    if (!node?.properties.columns) return null;
+                    try {
+                      const cols = JSON.parse(String(node.properties.columns)) as TableColumn[];
+                      return cols.map(col => (
+                        <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
+                      ));
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => {
+                  setShowFkModal(false);
+                  setDragSource(null);
+                }}
+                className="flex-1 px-4 py-2 bg-surface border border-border rounded text-sm hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!fkForm.fromCol || !fkForm.toCol) {
+                    alert("Please select both columns");
+                    return;
+                  }
+                  try {
+                    await createForeignKey({
+                      fromTable: fkForm.fromTable,
+                      fromColumn: fkForm.fromCol,
+                      toTable: fkForm.toTable,
+                      toColumn: fkForm.toCol
+                    });
+                    setShowFkModal(false);
+                    setDragSource(null);
+                    setEditMode(false);
+                    await loadSchemaGraph();
+                  } catch (err) {
+                    console.error("Failed to create FK:", err);
+                    alert("Failed to create foreign key");
+                  }
+                }}
+                disabled={!fkForm.fromCol || !fkForm.toCol}
+                className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white rounded text-sm font-medium"
+              >
+                Create
+              </button>
+            </div>
           </div>
         </div>
       )}

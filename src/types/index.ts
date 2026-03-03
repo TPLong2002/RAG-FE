@@ -59,3 +59,30 @@ export interface RelatedDocument {
   score: number;
   connectionCount: number;
 }
+
+export interface TableColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  description?: string;
+}
+
+export interface TableDetail {
+  name: string;
+  displayName: string;
+  columns: TableColumn[];
+  source: "mssql" | "neo4j";
+}
+
+export interface SchemaComparison {
+  newTables: TableDetail[];
+  existingTables: TableDetail[];
+}
+
+export interface ForeignKeyInput {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+}
