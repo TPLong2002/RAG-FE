@@ -75,9 +75,24 @@ export interface TableDetail {
   source: "mssql" | "neo4j";
 }
 
+export interface MssqlForeignKey {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+  constraintName: string;
+}
+
 export interface SchemaComparison {
   newTables: TableDetail[];
   existingTables: TableDetail[];
+  changedTables: TableDetail[];
+  mssqlForeignKeys: MssqlForeignKey[];
+}
+
+export interface SyncResult {
+  synced: number;
+  errors: string[];
 }
 
 export interface ForeignKeyInput {

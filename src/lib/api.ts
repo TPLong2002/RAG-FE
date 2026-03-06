@@ -182,6 +182,41 @@ export async function createForeignKey(fk: {
   return res.json();
 }
 
+export async function updateForeignKey(data: {
+  oldFromTable: string;
+  oldFromColumn: string;
+  oldToTable: string;
+  oldToColumn: string;
+  newFromTable: string;
+  newFromColumn: string;
+  newToTable: string;
+  newToColumn: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/schema/foreign-keys`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update foreign key");
+  return res.json();
+}
+
+export async function syncTables(tableNames: string[]) {
+  const res = await fetch(`${API_BASE}/api/schema/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tableNames }),
+  });
+  if (!res.ok) throw new Error("Failed to sync tables");
+  return res.json();
+}
+
+export async function fetchMssqlForeignKeys() {
+  const res = await fetch(`${API_BASE}/api/schema/mssql-foreign-keys`);
+  if (!res.ok) throw new Error("Failed to fetch MSSQL foreign keys");
+  return res.json();
+}
+
 export async function updateTable(tableName: string, updates: {
   displayName?: string;
   description?: string;
