@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import ForceGraph2D from "react-force-graph-2d";
-import { fetchDocumentGraph, fetchRelatedDocuments, fetchChunkGraph, fetchSchemaGraph, deleteSchemaTable, deleteForeignKey } from "../lib/api";
-import type { GraphData, RelatedDocument } from "../types";
+import { fetchDocumentGraph, fetchRelatedDocuments, fetchChunkGraph, fetchSchemaGraph, deleteSchemaTable, deleteForeignKey, createForeignKey, updateTable } from "../lib/api";
+import type { GraphData, RelatedDocument, TableColumn, GraphNode } from "../types";
+import EditTableModal from "../components/schema/EditTableModal";
 
 interface GraphNode2D {
   id: string;
@@ -16,12 +17,20 @@ interface GraphNode2D {
 }
 
 interface GraphLink2D {
-  source: string;
-  target: string;
+  source: string | GraphNode2D;
+  target: string | GraphNode2D;
   type: string;
   score?: number;
   fromColumn?: string;
   toColumn?: string;
+}
+
+function getNodeId(endpoint: string | GraphNode2D): string {
+  return typeof endpoint === "string" ? endpoint : endpoint.id;
+}
+
+function isSelfReference(link: GraphLink2D): boolean {
+  return getNodeId(link.source) === getNodeId(link.target);
 }
 
 function toForceData(data: GraphData, selectedDoc?: string | null) {
@@ -76,6 +85,18 @@ export default function GraphPage() {
   const [deleting, setDeleting] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  const [editMode, setEditMode] = useState(false);
+  const [dragSource, setDragSource] = useState<GraphNode2D | null>(null);
+  const [showFkModal, setShowFkModal] = useState(false);
+  const [fkForm, setFkForm] = useState({
+    fromTable: "",
+    toTable: "",
+    fromCol: "",
+    toCol: ""
+  });
+  const [editingTable, setEditingTable] = useState(false);
+  const [tableEditColumns, setTableEditColumns] = useState<TableColumn[]>([]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -162,6 +183,8 @@ export default function GraphPage() {
 
   useEffect(() => {
     setSelectedSchemaNode(null);
+    setEditMode(false);
+    setDragSource(null);
     if (activeTab === "overview") loadGraph();
     else if (activeTab === "chunks" && selectedDoc) loadChunkGraph();
     else if (activeTab === "schema") loadSchemaGraph();
@@ -181,6 +204,23 @@ export default function GraphPage() {
     () => (schemaGraph ? toForceData(schemaGraph, selectedDoc) : null),
     [schemaGraph, selectedDoc],
   );
+
+  const existingFkByPair = useMemo(() => {
+    const map = new Map<string, { fromCol: string; toCol: string }>();
+    if (!schemaForceData) return map;
+
+    schemaForceData.links.forEach((link) => {
+      if (link.type !== "FOREIGN_KEY") return;
+      const key = `${getNodeId(link.source)}->${getNodeId(link.target)}`;
+      if (map.has(key)) return;
+      map.set(key, {
+        fromCol: link.fromColumn ?? "",
+        toCol: link.toColumn ?? "",
+      });
+    });
+
+    return map;
+  }, [schemaForceData]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -220,7 +260,7 @@ export default function GraphPage() {
       </div>
 
       {loading ? (
-        <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading graph...</div>
+        <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading...</div>
       ) : (
         <div className="flex-1 flex min-h-0">
           {/* Graph canvas */}
@@ -329,11 +369,32 @@ export default function GraphPage() {
                 linkColor={() => COLORS.edgeForeignKey}
                 linkWidth={2}
                 linkDirectionalArrowLength={8}
-                linkDirectionalArrowRelPos={1}
+                linkDirectionalArrowRelPos={(link: GraphLink2D) => (isSelfReference(link) ? 0.6 : 1)}
+                linkCurvature={(link: GraphLink2D) => (isSelfReference(link) ? 0.55 : 0)}
                 linkLabel={(link: GraphLink2D) =>
                   link.fromColumn ? `FK: ${link.fromColumn} -> ${link.toColumn}` : link.type
                 }
-                onNodeClick={(node: GraphNode2D) => setSelectedSchemaNode(prev => prev?.id === node.id ? null : node)}
+                onNodeClick={(node: GraphNode2D) => {
+                  if (editMode) {
+                    if (!dragSource) {
+                      setDragSource(node);
+                    } else {
+                      const fromTable = dragSource.id;
+                      const toTable = node.id;
+                      const existingFk = existingFkByPair.get(`${fromTable}->${toTable}`);
+
+                      setShowFkModal(true);
+                      setFkForm({
+                        fromTable,
+                        toTable,
+                        fromCol: existingFk?.fromCol ?? "",
+                        toCol: existingFk?.toCol ?? "",
+                      });
+                    }
+                  } else {
+                    setSelectedSchemaNode(prev => prev?.id === node.id ? null : node);
+                  }
+                }}
                 cooldownTicks={100}
                 d3AlphaDecay={0.02}
                 d3VelocityDecay={0.3}
@@ -424,6 +485,22 @@ export default function GraphPage() {
                   <div className="text-sm font-medium">{selectedSchemaNode.label}</div>
                   <div className="flex items-center gap-1">
                     <button
+                      onClick={() => {
+                        let columns: TableColumn[] = [];
+                        try {
+                          columns = selectedSchemaNode.properties.columns
+                            ? JSON.parse(String(selectedSchemaNode.properties.columns))
+                            : [];
+                        } catch {}
+                        setTableEditColumns(columns);
+                        setEditingTable(true);
+                      }}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                      title="Edit table"
+                    >
+                      Edit
+                    </button>
+                    <button
                       onClick={() => handleDeleteTable(selectedSchemaNode.id)}
                       disabled={deleting}
                       className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
@@ -432,7 +509,10 @@ export default function GraphPage() {
                       Delete
                     </button>
                     <button
-                      onClick={() => setSelectedSchemaNode(null)}
+                      onClick={() => {
+                        setSelectedSchemaNode(null);
+                        setEditingTable(false);
+                      }}
                       className="text-xs text-muted hover:text-foreground"
                     >
                       ✕
@@ -441,8 +521,12 @@ export default function GraphPage() {
                 </div>
                 <div className="text-xs text-muted space-y-1">
                   {selectedSchemaNode.properties.description ? (
-                    <div>{String(selectedSchemaNode.properties.description)}</div>
-                  ) : null}
+                    <div className="italic">{String(selectedSchemaNode.properties.description)}</div>
+                  ) : (
+                    <div className="italic text-muted/50">No description</div>
+                  )}
+                </div>
+                <div className="text-xs text-muted space-y-1">
                   {selectedSchemaNode.properties.columns ? (() => {
                     try {
                       const cols = JSON.parse(String(selectedSchemaNode.properties.columns)) as Array<{
@@ -465,27 +549,32 @@ export default function GraphPage() {
                   {/* Foreign keys for this table */}
                   {schemaForceData && (() => {
                     const fks = schemaForceData.links.filter(
-                      (l) => l.source === selectedSchemaNode.id || l.target === selectedSchemaNode.id
+                      (l) => getNodeId(l.source) === selectedSchemaNode.id || getNodeId(l.target) === selectedSchemaNode.id
                     );
                     if (fks.length === 0) return null;
                     return (
                       <div className="mt-2">
                         <div className="font-medium mb-0.5">Foreign Keys:</div>
-                        {fks.map((fk, i) => (
-                          <div key={i} className="flex items-center justify-between gap-1 py-0.5">
-                            <span className="font-mono truncate">
-                              {String(fk.source)}.{fk.fromColumn} → {String(fk.target)}.{fk.toColumn}
-                            </span>
-                            <button
-                              onClick={() => handleDeleteFK(String(fk.source), String(fk.target), fk.fromColumn!, fk.toColumn!)}
-                              disabled={deleting}
-                              className="text-red-400 hover:text-red-300 shrink-0 disabled:opacity-50"
-                              title="Delete FK"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
+                        {fks.map((fk, i) => {
+                          const sourceId = getNodeId(fk.source);
+                          const targetId = getNodeId(fk.target);
+
+                          return (
+                            <div key={i} className="flex items-center justify-between gap-1 py-0.5">
+                              <span className="font-mono truncate">
+                                {sourceId}.{fk.fromColumn} → {targetId}.{fk.toColumn}
+                              </span>
+                              <button
+                                onClick={() => handleDeleteFK(sourceId, targetId, fk.fromColumn!, fk.toColumn!)}
+                                disabled={deleting}
+                                className="text-red-400 hover:text-red-300 shrink-0 disabled:opacity-50"
+                                title="Delete FK"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   })()}
@@ -537,6 +626,22 @@ export default function GraphPage() {
                 <div className="text-sm">
                   <span className="text-muted">Foreign Keys:</span> {schemaGraph.edges.length}
                 </div>
+                <button
+                  onClick={() => {
+                    setEditMode(!editMode);
+                    setDragSource(null);
+                  }}
+                  className={`mt-2 w-full px-3 py-2 rounded text-xs font-medium ${editMode ? "bg-amber-500 text-white" : "bg-surface border border-border"}`}
+                >
+                  Edit Mode: {editMode ? "ON" : "OFF"}
+                </button>
+                {editMode && dragSource && (
+                  <div className="p-2 bg-accent rounded text-xs">
+                    <div className="font-medium">Selected:</div>
+                    <div className="text-muted">{dragSource.label}</div>
+                    <div className="mt-1 text-xs text-muted">Click target table to create FK (self-reference supported)</div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -601,6 +706,135 @@ export default function GraphPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* FK Creation Modal */}
+      {showFkModal && dragSource && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-surface border border-border rounded-lg p-6 w-96 shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">Create Foreign Key</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm text-muted block mb-1">From Table</label>
+                <div className="font-medium">{fkForm.fromTable}</div>
+                <label className="text-sm text-muted block mb-1 mt-2">Column</label>
+                <select
+                  value={fkForm.fromCol}
+                  onChange={(e) => setFkForm({ ...fkForm, fromCol: e.target.value })}
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm"
+                >
+                  <option value="">Select column...</option>
+                  {(() => {
+                    const node = schemaForceData?.nodes.find(n => n.id === fkForm.fromTable);
+                    if (!node?.properties.columns) return null;
+                    try {
+                      const cols = JSON.parse(String(node.properties.columns)) as TableColumn[];
+                      return cols.map(col => (
+                        <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
+                      ));
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-muted block mb-1">To Table</label>
+                <div className="font-medium">{fkForm.toTable}</div>
+                <label className="text-sm text-muted block mb-1 mt-2">Column</label>
+                <select
+                  value={fkForm.toCol}
+                  onChange={(e) => setFkForm({ ...fkForm, toCol: e.target.value })}
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm"
+                >
+                  <option value="">Select column...</option>
+                  {(() => {
+                    const node = schemaForceData?.nodes.find(n => n.id === fkForm.toTable);
+                    if (!node?.properties.columns) return null;
+                    try {
+                      const cols = JSON.parse(String(node.properties.columns)) as TableColumn[];
+                      return cols.map(col => (
+                        <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
+                      ));
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => {
+                  setShowFkModal(false);
+                  setDragSource(null);
+                }}
+                className="flex-1 px-4 py-2 bg-surface border border-border rounded text-sm hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!fkForm.fromCol || !fkForm.toCol) {
+                    alert("Please select both columns");
+                    return;
+                  }
+                  try {
+                    await createForeignKey({
+                      fromTable: fkForm.fromTable,
+                      fromColumn: fkForm.fromCol,
+                      toTable: fkForm.toTable,
+                      toColumn: fkForm.toCol
+                    });
+                    setShowFkModal(false);
+                    setDragSource(null);
+                    setEditMode(false);
+                    await loadSchemaGraph();
+                  } catch (err) {
+                    console.error("Failed to create FK:", err);
+                    alert("Failed to create foreign key");
+                  }
+                }}
+                disabled={!fkForm.fromCol || !fkForm.toCol}
+                className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white rounded text-sm font-medium"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Table Modal (antd) */}
+      {selectedSchemaNode && (
+        <EditTableModal
+          open={editingTable}
+          tableName={selectedSchemaNode.id}
+          initialDisplayName={selectedSchemaNode.properties.displayName as string || selectedSchemaNode.label}
+          initialDescription={selectedSchemaNode.properties.description as string || ""}
+          initialColumns={tableEditColumns}
+          onSave={async (data) => {
+            const nodeId = selectedSchemaNode.id;
+            await updateTable(nodeId, {
+              displayName: data.displayName,
+              description: data.description,
+              columns: data.columns,
+            });
+            setEditingTable(false);
+            await loadSchemaGraph();
+
+            const updatedGraph = await fetchSchemaGraph();
+            const updatedNode = updatedGraph.nodes.find((n: GraphNode) => n.id === nodeId);
+            if (updatedNode) {
+              setSelectedSchemaNode({
+                ...selectedSchemaNode,
+                properties: updatedNode.properties,
+                label: updatedNode.label,
+              });
+            }
+          }}
+          onCancel={() => setEditingTable(false)}
+        />
       )}
     </div>
   );

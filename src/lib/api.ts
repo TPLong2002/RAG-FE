@@ -150,3 +150,121 @@ export async function deleteForeignKey(fromTable: string, toTable: string, fromC
   if (!res.ok) throw new Error("Failed to delete foreign key");
   return res.json();
 }
+
+export async function fetchSchemaComparison() {
+  const res = await fetch(`${API_BASE}/api/schema/comparison`);
+  if (!res.ok) throw new Error("Failed to fetch schema comparison");
+  return res.json();
+}
+
+export async function importTables(tableNames: string[]) {
+  const res = await fetch(`${API_BASE}/api/schema/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tableNames }),
+  });
+  if (!res.ok) throw new Error("Failed to import tables");
+  return res.json();
+}
+
+export async function createForeignKey(fk: {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/schema/foreign-keys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fk),
+  });
+  if (!res.ok) throw new Error("Failed to create foreign key");
+  return res.json();
+}
+
+export async function updateForeignKey(data: {
+  oldFromTable: string;
+  oldFromColumn: string;
+  oldToTable: string;
+  oldToColumn: string;
+  newFromTable: string;
+  newFromColumn: string;
+  newToTable: string;
+  newToColumn: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/schema/foreign-keys`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update foreign key");
+  return res.json();
+}
+
+export async function syncTables(tableNames: string[]) {
+  const res = await fetch(`${API_BASE}/api/schema/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tableNames }),
+  });
+  if (!res.ok) throw new Error("Failed to sync tables");
+  return res.json();
+}
+
+export async function fetchMssqlForeignKeys() {
+  const res = await fetch(`${API_BASE}/api/schema/mssql-foreign-keys`);
+  if (!res.ok) throw new Error("Failed to fetch MSSQL foreign keys");
+  return res.json();
+}
+
+export async function updateTable(tableName: string, updates: {
+  displayName?: string;
+  description?: string;
+  columns?: Array<{
+    name: string;
+    type: string;
+    nullable: boolean;
+    isPrimaryKey: boolean;
+    description?: string;
+  }>;
+}) {
+  const res = await fetch(`${API_BASE}/api/schema/tables/${encodeURIComponent(tableName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error("Failed to update table");
+  return res.json();
+}
+
+export async function getDriveAuthUrl() {
+  const res = await fetch(`${API_BASE}/api/documents/drive/auth-url`);
+  if (!res.ok) throw new Error("Failed to fetch auth URL");
+  return res.json(); // Trả về { url: '...' }
+}
+
+export async function fetchDriveFiles(folderId?: string, search?: string) {
+  const params = new URLSearchParams();
+  if (folderId) params.append("folderId", folderId);
+  if (search) params.append("search", search);
+
+  const res = await fetch(
+    `${API_BASE}/api/documents/drive/files?${params.toString()}`
+  );
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("AUTH_REQUIRED");
+    throw new Error("Failed to fetch drive files");
+  }
+  return res.json();
+}
+
+export async function ingestDriveFile(fileId: string, embeddingProvider: string, embeddingModel: string) {
+  const res = await fetch(`${API_BASE}/api/documents/drive/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileId, embeddingProvider, embeddingModel }),
+  });
+  if (!res.ok) throw new Error("Failed to ingest drive file");
+  return res.json();
+}
+ 

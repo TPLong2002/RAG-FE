@@ -59,3 +59,58 @@ export interface RelatedDocument {
   score: number;
   connectionCount: number;
 }
+
+export interface TableColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  description?: string;
+}
+
+export interface ColumnChange {
+  columnName: string;
+  changeType: 'added' | 'removed' | 'modified' | 'type-changed' | 'nullability-changed' | 'primary-key-changed';
+  oldValue?: any;
+  newValue?: any;
+}
+
+export interface TableDetail {
+  name: string;
+  displayName: string;
+  objectId?: number;
+  columns: TableColumn[];
+  source: "mssql" | "neo4j";
+  oldName?: string;
+  columnChanges?: ColumnChange[];
+  changeSummary?: string;
+  neo4jColumns?: TableColumn[];
+}
+
+export interface MssqlForeignKey {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+  constraintName: string;
+}
+
+export interface SchemaComparison {
+  newTables: TableDetail[];
+  existingTables: TableDetail[];
+  changedTables: TableDetail[];
+  renamedTables: TableDetail[];
+  mssqlForeignKeys: MssqlForeignKey[];
+}
+
+export interface SyncResult {
+  synced: number;
+  errors: string[];
+}
+
+export interface ForeignKeyInput {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+}
