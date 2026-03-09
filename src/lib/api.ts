@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_BE_API_URL ?? "http://localhost:3002";
 
 export async function fetchModels(type: "llm" | "embedding") {
   const res = await fetch(`${API_BASE}/api/models/${type}`);
