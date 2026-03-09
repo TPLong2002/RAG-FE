@@ -1,12 +1,14 @@
 services:
   fe-chatbot:
+    build:
+      context: .
     image: tplong/fe-chatbot:latest
     platform: linux/amd64
     container_name: fe-chatbot
     ports:
-      - "${FE_PORT:-3000}:3000"
+      - "${FE_PORT:-5175}:5175"
     environment:
-      - BE_API_URL=${BE_API_URL:-http://be-chatbot:3001}
+      - BE_PORT=${BE_PORT:-3091}
     networks:     #Kết nối với mạng chung để giao tiếp với backend, bỏ khi khác id mạng
       - app-net   #Cùng tên mạng để kết nối với các dịch vụ khác trong cùng mạng, bỏ khi khác id mạng
     restart: unless-stopped

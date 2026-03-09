@@ -10,16 +10,17 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Empty by default → browser uses relative /api/... paths → nginx proxy
+ARG VITE_BE_API_URL=
+ENV VITE_BE_API_URL=$VITE_BE_API_URL
+
 RUN npm run build
 
-FROM node:22-alpine
+FROM nginx:alpine
 
-WORKDIR /app
-
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["nginx", "-g", "daemon off;"]

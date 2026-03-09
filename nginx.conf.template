@@ -1,0 +1,20 @@
+resolver 127.0.0.11 valid=30s;
+
+server {
+    listen 5175;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Proxy API calls to backend via Docker internal network
+    location /api/ {
+        set $upstream http://host.docker.internal:${BE_PORT};
+        proxy_pass $upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
