@@ -19,6 +19,7 @@
     "react-force-graph-2d": "^1.29.1",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.1",
+    "sweetalert2": "^11.26.21",
     "tailwindcss": "^4.2.1"
   },
   "devDependencies": {
