@@ -236,3 +236,35 @@ export async function updateTable(tableName: string, updates: {
   if (!res.ok) throw new Error("Failed to update table");
   return res.json();
 }
+
+export async function getDriveAuthUrl() {
+  const res = await fetch(`${API_BASE}/api/documents/drive/auth-url`);
+  if (!res.ok) throw new Error("Failed to fetch auth URL");
+  return res.json(); // Trả về { url: '...' }
+}
+
+export async function fetchDriveFiles(folderId?: string, search?: string) {
+  const params = new URLSearchParams();
+  if (folderId) params.append("folderId", folderId);
+  if (search) params.append("search", search);
+
+  const res = await fetch(
+    `${API_BASE}/api/documents/drive/files?${params.toString()}`
+  );
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("AUTH_REQUIRED");
+    throw new Error("Failed to fetch drive files");
+  }
+  return res.json();
+}
+
+export async function ingestDriveFile(fileId: string, embeddingProvider: string, embeddingModel: string) {
+  const res = await fetch(`${API_BASE}/api/documents/drive/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileId, embeddingProvider, embeddingModel }),
+  });
+  if (!res.ok) throw new Error("Failed to ingest drive file");
+  return res.json();
+}
+ 
