@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { fetchSchemaComparison, importTables, syncTables, deleteSchemaTable, createForeignKey } from "../lib/api";
-import type { SchemaComparison } from "../types";
+import type { SchemaComparison, TableDetail } from "../types";
 
 export default function ImportPage() {
   const [comparison, setComparison] = useState<SchemaComparison | null>(null);
@@ -9,8 +9,12 @@ export default function ImportPage() {
   const [importing, setImporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [selectedSyncTables, setSelectedSyncTables] = useState<Set<string>>(new Set());
+  const [selectedRenamedTables, setSelectedRenamedTables] = useState<Set<string>>(new Set());
   const [selectedMssqlFks, setSelectedMssqlFks] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [syncingRenamed, setSyncingRenamed] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
 
   const loadComparison = useCallback(async () => {
     setLoading(true);
@@ -18,6 +22,8 @@ export default function ImportPage() {
       const data = await fetchSchemaComparison();
       setComparison(data);
       setSelectedTables(new Set());
+      setSelectedSyncTables(new Set());
+      setSelectedRenamedTables(new Set());
     } catch (err) {
       console.error("Failed to load schema comparison:", err);
       alert("Failed to load schema comparison. Make sure MSSQL is configured.");
@@ -61,6 +67,23 @@ export default function ImportPage() {
     }
   }, [selectedSyncTables, loadComparison]);
 
+  const handleSyncRenamedTables = useCallback(async () => {
+    if (selectedRenamedTables.size === 0) return;
+    setSyncingRenamed(true);
+    try {
+      // Use syncTables API for renamed tables as well (logic is in backend)
+      const result = await syncTables(Array.from(selectedRenamedTables));
+      alert(`Updated ${result.synced} renamed tables successfully${result.errors.length > 0 ? `. Errors: ${result.errors.join(", ")}` : ""}`);
+      setSelectedRenamedTables(new Set());
+      await loadComparison();
+    } catch (err) {
+      console.error("Failed to sync renamed tables:", err);
+      alert("Failed to sync renamed tables");
+    } finally {
+      setSyncingRenamed(false);
+    }
+  }, [selectedRenamedTables, loadComparison]);
+
   const handleImportMssqlFks = useCallback(async () => {
     if (!comparison || selectedMssqlFks.size === 0) return;
     let created = 0;
@@ -92,19 +115,53 @@ export default function ImportPage() {
     );
   }
 
+  // Filter tables based on search term
+  const filterTables = (tables: TableDetail[]) => {
+    if (!searchTerm.trim()) return tables;
+    const term = searchTerm.toLowerCase();
+    return tables.filter(table =>
+      table.name.toLowerCase().includes(term) ||
+      table.displayName.toLowerCase().includes(term)
+    );
+  };
+
+  const filteredNewTables = filterTables(comparison?.newTables || []);
+  const filteredChangedTables = filterTables(comparison?.changedTables || []);
+  const filteredRenamedTables = filterTables(comparison?.renamedTables || []);
+  const filteredExistingTables = filterTables(comparison?.existingTables || []);
+
   return (
-    <div className="flex-1 overflow-auto p-6">
-      <div className="max-w-5xl mx-auto">
-        <h3 className="text-lg font-semibold mb-4">Import MSSQL Tables</h3>
+    <div className="flex-1 overflow-auto p-1">
+      <div className="mx-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">Import MSSQL Tables</h3>
+          <div className="relative w-64">
+            <input
+              type="text"
+              placeholder="Search tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full px-4 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
         {comparison ? (
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-3 gap-6">
             <div>
               <h4 className="text-sm font-medium mb-2 text-emerald-400">New Tables (from MSSQL)</h4>
               <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
-                {comparison.newTables.length === 0 ? (
+                {filteredNewTables.length === 0 ? (
                   <div className="text-sm text-muted">All tables already imported</div>
                 ) : (
-                  comparison.newTables.map((table) => (
+                  filteredNewTables.map((table) => (
                     <label key={table.name} className="flex items-start gap-2 p-2 hover:bg-surface-hover rounded cursor-pointer">
                       <input
                         type="checkbox"
@@ -125,14 +182,23 @@ export default function ImportPage() {
                   ))
                 )}
               </div>
+              {selectedTables.size > 0 && (
+                <button
+                  onClick={handleImportTables}
+                  disabled={importing}
+                  className="mt-3 w-full px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white rounded-lg text-sm font-medium"
+                >
+                  {importing ? "Importing..." : `Import Selected (${selectedTables.size})`}
+                </button>
+              )}
             </div>
             <div>
               <h4 className="text-sm font-medium mb-2 text-blue-400">Existing Tables (in Neo4j)</h4>
               <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
-                {comparison.existingTables.length === 0 ? (
+                {filteredExistingTables.length === 0 ? (
                   <div className="text-sm text-muted">No tables in Neo4j yet</div>
                 ) : (
-                  comparison.existingTables.map((table) => (
+                  filteredExistingTables.map((table) => (
                     <div key={table.name} className="p-2 rounded bg-accent flex items-start justify-between">
                       <div className="flex-1">
                         <div className="text-sm font-medium">{table.displayName}</div>
@@ -163,54 +229,305 @@ export default function ImportPage() {
                 )}
               </div>
             </div>
+            <div>
+              <h4 className="text-sm font-medium mb-2 text-amber-400">Changed Tables</h4>
+              <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
+                {filteredChangedTables.length === 0 && filteredRenamedTables.length === 0 ? (
+                  <div className="text-sm text-muted">No schema changes or renamed tables</div>
+                ) : (
+                  <>
+                    {filteredChangedTables.map((table) => {
+                      const isExpanded = expandedTables.has(table.name);
+                      return (
+                        <div key={table.name} className="border border-gray-700 rounded-lg overflow-hidden">
+                          <label className="flex items-start gap-2 p-2 hover:bg-surface-hover cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedSyncTables.has(table.name)}
+                              onChange={(e) => {
+                                const newSet = new Set(selectedSyncTables);
+                                if (e.target.checked) newSet.add(table.name);
+                                else newSet.delete(table.name);
+                                setSelectedSyncTables(newSet);
+                              }}
+                              className="mt-1"
+                            />
+                            <div className="flex-1 text-sm">
+                              <div className="flex items-center justify-between">
+                                <div className="font-medium">{table.displayName}</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const newSet = new Set(expandedTables);
+                                    if (isExpanded) newSet.delete(table.name);
+                                    else newSet.add(table.name);
+                                    setExpandedTables(newSet);
+                                  }}
+                                  className="text-xs text-gray-400 hover:text-gray-300"
+                                >
+                                  {isExpanded ? '▼' : '▶'} Details
+                                </button>
+                              </div>
+                              <div className="text-xs text-muted">{table.columns.length} columns (schema differs)</div>
+                              {table.changeSummary && (
+                                <div className="text-xs text-amber-400 mt-1">{table.changeSummary}</div>
+                              )}
+                            </div>
+                          </label>
+
+                          {isExpanded && (
+                            <div className="px-4 pb-3 pt-2 border-t border-gray-300 bg-gray-200">
+                              {/* Column changes summary */}
+                              {table.columnChanges && table.columnChanges.length > 0 && (
+                                <div className="mb-3">
+                                  <div className="text-xs font-medium text-gray-600 mb-2">Changes:</div>
+                                  <div className="space-y-1">
+                                    {table.columnChanges.map((change, idx) => {
+                                      let changeLabel = '';
+                                      let changeColor = '';
+                                      switch (change.changeType) {
+                                        case 'added': changeLabel = 'Added'; changeColor = 'text-emerald-700'; break;
+                                        case 'removed': changeLabel = 'Removed'; changeColor = 'text-red-700'; break;
+                                        case 'type-changed': changeLabel = 'Type changed'; changeColor = 'text-amber-700'; break;
+                                        case 'nullability-changed': changeLabel = 'Nullability changed'; changeColor = 'text-blue-700'; break;
+                                        case 'primary-key-changed': changeLabel = 'PK changed'; changeColor = 'text-purple-700'; break;
+                                        default: changeLabel = 'Modified'; changeColor = 'text-gray-600';
+                                      }
+                                      return (
+                                        <div key={idx} className="text-xs flex items-center gap-2">
+                                          <span className={`${changeColor} font-medium`}>{changeLabel}:</span>
+                                          <span className="text-gray-800">{change.columnName}</span>
+                                          {change.oldValue && <span className="text-gray-500">(was: {change.oldValue})</span>}
+                                          {change.newValue && <span className="text-gray-800">→ {change.newValue}</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                              {/* Side-by-side column comparison */}
+                              {table.neo4jColumns && (
+                                <div>
+                                  <div className="text-xs font-medium text-gray-600 mb-2">Column Comparison (MSSQL vs Neo4j):</div>
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                      <div className="text-emerald-700 font-medium mb-1">MSSQL ({table.columns.length} cols)</div>
+                                      <div className="space-y-0.5">
+                                        {table.columns.map((col) => {
+                                          const neo4jCol = table.neo4jColumns?.find(c => c.name === col.name);
+                                          const isDiff = !neo4jCol ||
+                                            neo4jCol.type !== col.type ||
+                                            neo4jCol.nullable !== col.nullable ||
+                                            neo4jCol.isPrimaryKey !== col.isPrimaryKey;
+                                          return (
+                                            <div key={col.name} className={`font-mono px-1 rounded ${isDiff ? 'bg-emerald-100 text-emerald-800' : 'text-gray-600'}`}>
+                                              {col.isPrimaryKey && <span className="text-yellow-600">PK </span>}
+                                              {col.name} <span className={isDiff ? 'text-emerald-600' : 'text-gray-500'}>{col.type}</span>
+                                              {col.nullable ? <span className={isDiff ? 'text-emerald-500' : 'text-gray-400'}> NULL</span> : <span className={isDiff ? 'text-emerald-600' : 'text-gray-500'}> NOT NULL</span>}
+                                              {!neo4jCol && <span className="text-emerald-700 ml-1">(new)</span>}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-blue-700 font-medium mb-1">Neo4j ({table.neo4jColumns.length} cols)</div>
+                                      <div className="space-y-0.5">
+                                        {table.neo4jColumns.map((col) => {
+                                          const mssqlCol = table.columns.find(c => c.name === col.name);
+                                          const isDiff = !mssqlCol ||
+                                            mssqlCol.type !== col.type ||
+                                            mssqlCol.nullable !== col.nullable ||
+                                            mssqlCol.isPrimaryKey !== col.isPrimaryKey;
+                                          return (
+                                            <div key={col.name} className={`font-mono px-1 rounded ${isDiff ? 'bg-red-100 text-red-800' : 'text-gray-600'}`}>
+                                              {col.isPrimaryKey && <span className="text-yellow-600">PK </span>}
+                                              {col.name} <span className={isDiff ? 'text-red-600' : 'text-gray-500'}>{col.type}</span>
+                                              {col.nullable ? <span className={isDiff ? 'text-red-500' : 'text-gray-400'}> NULL</span> : <span className={isDiff ? 'text-red-600' : 'text-gray-500'}> NOT NULL</span>}
+                                              {!mssqlCol && <span className="text-red-700 ml-1">(removed)</span>}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {filteredRenamedTables.map((table) => {
+                      const isExpanded = expandedTables.has(table.name);
+                      return (
+                        <div key={table.name} className="border border-gray-700 rounded-lg overflow-hidden">
+                          <label className="flex items-start gap-2 p-2 hover:bg-surface-hover cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedRenamedTables.has(table.name)}
+                              onChange={(e) => {
+                                const newSet = new Set(selectedRenamedTables);
+                                if (e.target.checked) newSet.add(table.name);
+                                else newSet.delete(table.name);
+                                setSelectedRenamedTables(newSet);
+                              }}
+                              className="mt-1"
+                            />
+                            <div className="flex-1 text-sm">
+                              <div className="flex items-center justify-between">
+                                <div className="font-medium">{table.displayName}</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const newSet = new Set(expandedTables);
+                                    if (isExpanded) newSet.delete(table.name);
+                                    else newSet.add(table.name);
+                                    setExpandedTables(newSet);
+                                  }}
+                                  className="text-xs text-gray-400 hover:text-gray-300"
+                                >
+                                  {isExpanded ? '▼' : '▶'} Details
+                                </button>
+                              </div>
+                              <div className="text-xs text-muted">{table.columns.length} columns (renamed)</div>
+                              {table.changeSummary && (
+                                <div className="text-xs text-cyan-400 mt-1">{table.changeSummary}</div>
+                              )}
+                              {table.objectId && (
+                                <div className="text-xs text-gray-500 mt-1">Object ID: {table.objectId}</div>
+                              )}
+                            </div>
+                          </label>
+
+                          {isExpanded && (
+                            <div className="px-4 pb-3 pt-2 border-t border-gray-300 bg-gray-200">
+                              <div className="text-xs font-medium text-gray-600 mb-2">Table Rename Details:</div>
+                              {table.oldName && (
+                                <div className="text-xs text-gray-700">
+                                  Old name: <span className="font-mono text-red-700">{table.oldName}</span> → New name: <span className="font-mono text-emerald-700">{table.name}</span>
+                                </div>
+                              )}
+                              {/* Column changes for renamed tables */}
+                              {table.columnChanges && table.columnChanges.length > 0 && (
+                                <div className="mt-2">
+                                  <div className="text-xs font-medium text-gray-600 mb-1">Column Changes:</div>
+                                  <div className="space-y-1">
+                                    {table.columnChanges.map((change, idx) => {
+                                      let changeLabel = '';
+                                      let changeColor = '';
+                                      switch (change.changeType) {
+                                        case 'added': changeLabel = 'Added'; changeColor = 'text-emerald-700'; break;
+                                        case 'removed': changeLabel = 'Removed'; changeColor = 'text-red-700'; break;
+                                        case 'type-changed': changeLabel = 'Type changed'; changeColor = 'text-amber-700'; break;
+                                        case 'nullability-changed': changeLabel = 'Nullability changed'; changeColor = 'text-blue-700'; break;
+                                        case 'primary-key-changed': changeLabel = 'PK changed'; changeColor = 'text-purple-700'; break;
+                                        default: changeLabel = 'Modified'; changeColor = 'text-gray-600';
+                                      }
+                                      return (
+                                        <div key={idx} className="text-xs flex items-center gap-2">
+                                          <span className={`${changeColor} font-medium`}>{changeLabel}:</span>
+                                          <span className="text-gray-800">{change.columnName}</span>
+                                          {change.oldValue && <span className="text-gray-500">(was: {change.oldValue})</span>}
+                                          {change.newValue && <span className="text-gray-800">→ {change.newValue}</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                              {/* Side-by-side comparison for renamed tables */}
+                              {table.neo4jColumns && (
+                                <div className="mt-2">
+                                  <div className="text-xs font-medium text-gray-600 mb-2">Column Comparison (MSSQL vs Neo4j):</div>
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                      <div className="text-emerald-700 font-medium mb-1">MSSQL ({table.columns.length} cols)</div>
+                                      <div className="space-y-0.5">
+                                        {table.columns.map((col) => {
+                                          const neo4jCol = table.neo4jColumns?.find(c => c.name === col.name);
+                                          const isDiff = !neo4jCol ||
+                                            neo4jCol.type !== col.type ||
+                                            neo4jCol.nullable !== col.nullable ||
+                                            neo4jCol.isPrimaryKey !== col.isPrimaryKey;
+                                          return (
+                                            <div key={col.name} className={`font-mono px-1 rounded ${isDiff ? 'bg-emerald-100 text-emerald-800' : 'text-gray-600'}`}>
+                                              {col.isPrimaryKey && <span className="text-yellow-600">PK </span>}
+                                              {col.name} <span className={isDiff ? 'text-emerald-600' : 'text-gray-500'}>{col.type}</span>
+                                              {col.nullable ? <span className={isDiff ? 'text-emerald-500' : 'text-gray-400'}> NULL</span> : <span className={isDiff ? 'text-emerald-600' : 'text-gray-500'}> NOT NULL</span>}
+                                              {!neo4jCol && <span className="text-emerald-700 ml-1">(new)</span>}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-blue-700 font-medium mb-1">Neo4j ({table.neo4jColumns.length} cols)</div>
+                                      <div className="space-y-0.5">
+                                        {table.neo4jColumns.map((col) => {
+                                          const mssqlCol = table.columns.find(c => c.name === col.name);
+                                          const isDiff = !mssqlCol ||
+                                            mssqlCol.type !== col.type ||
+                                            mssqlCol.nullable !== col.nullable ||
+                                            mssqlCol.isPrimaryKey !== col.isPrimaryKey;
+                                          return (
+                                            <div key={col.name} className={`font-mono px-1 rounded ${isDiff ? 'bg-red-100 text-red-800' : 'text-gray-600'}`}>
+                                              {col.isPrimaryKey && <span className="text-yellow-600">PK </span>}
+                                              {col.name} <span className={isDiff ? 'text-red-600' : 'text-gray-500'}>{col.type}</span>
+                                              {col.nullable ? <span className={isDiff ? 'text-red-500' : 'text-gray-400'}> NULL</span> : <span className={isDiff ? 'text-red-600' : 'text-gray-500'}> NOT NULL</span>}
+                                              {!mssqlCol && <span className="text-red-700 ml-1">(removed)</span>}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {!table.neo4jColumns && !table.columnChanges?.length && (
+                                <div className="text-xs text-gray-600 mt-2">
+                                  {table.columns.length} columns (no column changes)
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+              {(selectedSyncTables.size > 0 || selectedRenamedTables.size > 0) && (
+                <div className="mt-3 space-x-2">
+                  {selectedSyncTables.size > 0 && (
+                    <button
+                      onClick={handleSyncTables}
+                      disabled={syncing}
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-500/50 text-white rounded-lg text-sm font-medium"
+                    >
+                      {syncing ? "Syncing..." : `Sync Changed (${selectedSyncTables.size})`}
+                    </button>
+                  )}
+                  {selectedRenamedTables.size > 0 && (
+                    <button
+                      onClick={handleSyncRenamedTables}
+                      disabled={syncingRenamed}
+                      className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:bg-cyan-500/50 text-white rounded-lg text-sm font-medium"
+                    >
+                      {syncingRenamed ? "Updating..." : `Update Renamed (${selectedRenamedTables.size})`}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
-        {selectedTables.size > 0 && (
-          <button
-            onClick={handleImportTables}
-            disabled={importing}
-            className="mt-6 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-white rounded-lg text-sm font-medium"
-          >
-            {importing ? "Importing..." : `Import Selected (${selectedTables.size})`}
-          </button>
-        )}
 
-        {/* Changed Tables */}
-        {comparison && comparison.changedTables && comparison.changedTables.length > 0 && (
-          <div className="mt-8">
-            <h4 className="text-sm font-medium mb-2 text-amber-400">Changed Tables (schema differs from MSSQL)</h4>
-            <div className="space-y-2 border border-border rounded-lg p-3 bg-surface">
-              {comparison.changedTables.map((table) => (
-                <label key={table.name} className="flex items-start gap-2 p-2 hover:bg-surface-hover rounded cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedSyncTables.has(table.name)}
-                    onChange={(e) => {
-                      const newSet = new Set(selectedSyncTables);
-                      if (e.target.checked) newSet.add(table.name);
-                      else newSet.delete(table.name);
-                      setSelectedSyncTables(newSet);
-                    }}
-                    className="mt-1"
-                  />
-                  <div className="flex-1 text-sm">
-                    <div className="font-medium">{table.displayName}</div>
-                    <div className="text-xs text-muted">{table.columns.length} columns (from MSSQL)</div>
-                  </div>
-                </label>
-              ))}
-            </div>
-            {selectedSyncTables.size > 0 && (
-              <button
-                onClick={handleSyncTables}
-                disabled={syncing}
-                className="mt-3 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-500/50 text-white rounded-lg text-sm font-medium"
-              >
-                {syncing ? "Syncing..." : `Sync Selected (${selectedSyncTables.size})`}
-              </button>
-            )}
-          </div>
-        )}
+
 
         {/* MSSQL Foreign Keys */}
         {comparison && comparison.mssqlForeignKeys && comparison.mssqlForeignKeys.length > 0 && (

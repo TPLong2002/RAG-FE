@@ -68,11 +68,23 @@ export interface TableColumn {
   description?: string;
 }
 
+export interface ColumnChange {
+  columnName: string;
+  changeType: 'added' | 'removed' | 'modified' | 'type-changed' | 'nullability-changed' | 'primary-key-changed';
+  oldValue?: any;
+  newValue?: any;
+}
+
 export interface TableDetail {
   name: string;
   displayName: string;
+  objectId?: number;
   columns: TableColumn[];
   source: "mssql" | "neo4j";
+  oldName?: string;
+  columnChanges?: ColumnChange[];
+  changeSummary?: string;
+  neo4jColumns?: TableColumn[];
 }
 
 export interface MssqlForeignKey {
@@ -87,6 +99,7 @@ export interface SchemaComparison {
   newTables: TableDetail[];
   existingTables: TableDetail[];
   changedTables: TableDetail[];
+  renamedTables: TableDetail[];
   mssqlForeignKeys: MssqlForeignKey[];
 }
 
