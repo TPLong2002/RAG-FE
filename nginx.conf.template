@@ -7,7 +7,7 @@ server {
 
     # Proxy API calls to backend via Docker internal network
     location /api/ {
-        set $upstream http://host.docker.internal:${BE_PORT};
+        set $upstream http://${BE_HOST}:${BE_PORT};
         proxy_pass $upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
